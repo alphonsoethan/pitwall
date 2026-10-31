@@ -23,15 +23,19 @@ if "verdict_text" not in st.session_state:
 
 # ---------- Race map ----------
 RACE_MAP = {
-    "São Paulo 2024": (2024, "São Paulo"),
-    "Monza 2024": (2024, "Monza"),
-    "Silverstone 2024": (2024, "Silverstone"),
+    "São Paulo 2024": {"year": 2024, "race": "São Paulo", "laps": 71},
+    "Monza 2024": {"year": 2024, "race": "Monza", "laps": 53},
+    "Silverstone 2024": {"year": 2024, "race": "Silverstone", "laps": 52},
 }
 
 
 # ---------- Cached session loaders ----------
 @st.cache_data(show_spinner="Loading race data...")
 def get_live_session():
+    CACHE_DIR = "fastf1_cache"
+    if not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR)
+    fastf1.Cache.enable_cache(CACHE_DIR)
     session = fastf1.get_session(2024, "São Paulo", "R")
     session.load(telemetry=False, weather=True, messages=False)
     return session
@@ -39,6 +43,10 @@ def get_live_session():
 
 @st.cache_data(show_spinner="Loading race data...")
 def get_session_for_race(year, race):
+    CACHE_DIR = "fastf1_cache"
+    if not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR)
+    fastf1.Cache.enable_cache(CACHE_DIR)
     session = fastf1.get_session(year, race, "R")
     session.load(telemetry=False, weather=False, messages=False)
     return session
@@ -404,19 +412,8 @@ elif st.session_state.page == "recap_setup":
     st.write("Pick a race, a driver, and the lap you left at. We'll recap everything after that.")
 
     race_label = st.selectbox("Race", list(RACE_MAP.keys()))
-    year, race_query = RACE_MAP[race_label]
-
-    # --- Load session for the selected race (cached) to get total_laps ---
-    with st.spinner("Loading race info..."):
-        try:
-            race_session = get_session_for_race(year, race_query)
-            max_laps = race_session.total_laps
-            if max_laps is None or max_laps == 0:
-                # Fallback to observed max lap in data
-                max_laps = int(race_session.laps["LapNumber"].max())
-        except Exception as e:
-            st.error(f"Could not load race data for {race_label}: {e}")
-            st.stop()
+    race_info = RACE_MAP[race_label]
+    max_laps = int(race_info["laps"])   # instant — no session load
 
     driver = st.selectbox(
         "Driver to focus on",
@@ -425,9 +422,9 @@ elif st.session_state.page == "recap_setup":
     from_lap = st.slider(
         "I left at lap",
         min_value=1,
-        max_value=int(max_laps),
-        value=min(10, int(max_laps)),
-        help=f"{race_label} has {int(max_laps)} laps.",
+        max_value=max_laps,
+        value=min(10, max_laps),
+        help=f"{race_label} has {max_laps} laps.",
     )
 
     if st.button("Generate Recap →", type="primary"):
@@ -438,7 +435,7 @@ elif st.session_state.page == "recap_setup":
         st.session_state.verdict_text = None
         st.session_state.page = "recap"
         st.rerun()
-
+        
 # ============================================================
 # Page 4: Recap display
 # ============================================================
@@ -452,8 +449,10 @@ elif st.session_state.page == "recap":
     race_label = st.session_state.recap_race_label
     from_lap = st.session_state.recap_from_lap
     driver_abbrev = st.session_state.recap_driver
-    year, race_query = RACE_MAP[race_label]
-
+    race_info = RACE_MAP[race_label]
+    year = race_info["year"]
+    race_query = race_info["race"]
+    
     st.title(f"Recap: {driver_abbrev} · {race_label}")
     st.caption(f"You left at lap {from_lap}")
 
