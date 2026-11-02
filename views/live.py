@@ -7,9 +7,16 @@ from gemini_client import get_strategy
 
 
 @st.cache_data(show_spinner="Loading race data...")
-def _load_session():
-    session = fastf1.get_session(2024, "São Paulo", "R")
-    session.load(telemetry=False, weather=True, messages=False)
+def _load_session(year, race):
+    session = fastf1.get_session(year, race, "R")
+    session.load(telemetry=False, weather=False, messages=False)
+    # FastF1 can silently succeed with empty laps on Streamlit Cloud
+    if session.laps is None or len(session.laps) == 0:
+        raise RuntimeError(
+            f"F1 timing data for {race} {year} came back empty. "
+            "This usually means the official F1 API rejected the request "
+            "(common on cloud IPs without authentication). Try again in a minute."
+        )
     return session
 
 

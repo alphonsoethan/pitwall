@@ -8,7 +8,7 @@ from config import CACHE_DIR
 # ---------- FastF1 cache: enabled ONCE, before any session load ----------
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
-fastf1.Cache.enable_cache(CACHE_DIR)
+fastf1.Cache.configure(CACHE_DIR)
 
 st.set_page_config(page_title="PitWall", page_icon="🏎️", layout="wide")
 
