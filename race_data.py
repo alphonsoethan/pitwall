@@ -69,6 +69,84 @@ def _lap_is_green(lap_start, lap_end, status_windows):
     return (non_green_overlap / lap_dur) < 0.15
 
 
+def build_race_summary(session, from_lap):
+    """
+    Build a whole-race summary (no single driver focus).
+    Used when the user picks 'Whole race (no specific driver)'.
+    """
+    laps = session.laps.copy()
+    laps["LapTimeSec"] = laps["LapTime"].dt.total_seconds()
+
+    after = laps[laps["LapNumber"] > from_lap].copy()
+
+    # Final classification from results
+    res = session.results.copy()
+    classification = res[["Abbreviation", "FullName", "Position", "Points"]].dropna(subset=["Position"])
+    classification = classification.sort_values("Position")
+
+    # Winner
+    winner = classification.iloc[0] if not classification.empty else None
+
+    # Podium
+    podium = classification.head(3)
+
+    # Fastest lap overall
+    valid_laps = laps.dropna(subset=["LapTime"])
+    fl = None
+    if not valid_laps.empty:
+        fl_row = valid_laps.loc[valid_laps["LapTime"].idxmin()]
+        fl = (fl_row["Driver"], fl_row["LapTimeSec"])
+
+    # Key events: red flags, safety cars from track status
+    events = []
+    if not session.track_status.empty:
+        ts = session.track_status
+        for i, row in ts.iterrows():
+            code = str(row["Status"])
+            if code in ("4", "5", "6"):
+                label = {"4": "Safety Car", "5": "Red Flag", "6": "VSC"}[code]
+                events.append(f"{label} at session time {row['Time']}")
+        # Keep it short
+        events = events[:6]
+
+    summary_lines = [
+        f"Race: {session.event['EventName']} {session.event.year}",
+        f"User watched up to lap {from_lap} (0 = missed the entire race).",
+        f"Total laps: {int(laps['LapNumber'].max())}",
+    ]
+    if winner is not None:
+        summary_lines.append(
+            f"Winner: {winner['FullName']} ({winner['Abbreviation']}), "
+            f"{int(winner['Points'])} pts"
+        )
+    if not podium.empty:
+        podium_str = ", ".join(
+            f"P{int(r['Position'])} {r['FullName']}" for _, r in podium.iterrows()
+        )
+        summary_lines.append(f"Podium: {podium_str}")
+    if fl is not None:
+        summary_lines.append(f"Fastest lap: {fl[0]} — {fl[1]:.3f}s")
+    if events:
+        summary_lines.append("Race control events:")
+        for e in events:
+            summary_lines.append(f"- {e}")
+
+    summary_lines.append("Final top 10:")
+    for _, r in classification.head(10).iterrows():
+        summary_lines.append(
+            f"- P{int(r['Position'])} {r['FullName']} ({r['Abbreviation']}) — {int(r['Points'])} pts"
+        )
+
+    return {
+        "driver": None,
+        "from_lap": from_lap,
+        "laps": after,
+        "key_moments": [],
+        "summary": "\n".join(summary_lines),
+        "session": session,
+    }
+    
+
 def build_recap_data(session, driver, from_lap):
     laps = get_driver_laps(session, driver)
     laps["LapTimeSec"] = laps["LapTime"].dt.total_seconds()
