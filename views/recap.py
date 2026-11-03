@@ -1,35 +1,9 @@
 # views/recap.py
 import streamlit as st
 import pandas as pd
-import fastf1
 
 from config import RACE_MAP, DRIVER_CHOICES, get_shared_session
 from gemini_client import get_recap, get_verdict, get_race_recap, get_race_verdict
-
-
-# def _f1_credentials():
-#     try:
-#         return st.secrets["F1_USERNAME"], st.secrets["F1_PASSWORD"]
-#     except Exception:
-#         return os.environ.get("F1_USERNAME"), os.environ.get("F1_PASSWORD")
-
-
-# @st.cache_data(show_spinner="Loading race data...")
-# def _load_session(year, race):
-    user, pw = _f1_credentials()
-    if user and pw:
-        os.environ["F1_USERNAME"] = user
-        os.environ["F1_PASSWORD"] = pw
-
-    session = fastf1.get_session(year, race, "R")
-    session.load(telemetry=False, weather=False, messages=False)
-
-    if session.laps is None or len(session.laps) == 0:
-        raise RuntimeError(
-            "F1 timing data came back empty. Check F1_USERNAME / F1_PASSWORD "
-            "in Streamlit secrets, or try again in a minute."
-        )
-    return session
 
 
 def render_setup():
