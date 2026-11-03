@@ -59,7 +59,7 @@ def _render_leaderboard(standings):
             if r["Status"] == "DNF":
                 c2.markdown(f"~~**{r['DriverNumber']} {r['FullName']}**~~")
             else:
-                c2.markdown(f"**P{r['Position']}** · {r['DriverNumber']} {r['FullName']}")
+                c2.markdown(f"**P{int(r['Position'])}** · {r['DriverNumber']} {r['FullName']}")
             c3.caption(r["TeamName"])
             c4.write(r["Gap"])
             c5.caption(r["TyreText"] if r["Status"] == "RUNNING" else "-")

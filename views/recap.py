@@ -51,7 +51,7 @@ def _render_classification_table(session):
     res = res.sort_values("Position")
 
     display = pd.DataFrame({
-        "P": res["Position"].astype(int).values,
+        "Position": res["Position"].astype(int).values,
         "Driver": res["FullName"].values if "FullName" in res.columns else res["Driver"].values,
         "Team": res["TeamName"].values if "TeamName" in res.columns else [""] * len(res),
         "Points": res["Points"].fillna(0).astype(int).values if "Points" in res.columns else [0] * len(res),
