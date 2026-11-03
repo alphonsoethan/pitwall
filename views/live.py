@@ -1,153 +1,120 @@
 # views/live.py
+import time
+
 import pandas as pd
 import streamlit as st
-import fastf1
-import os
 
-from gemini_client import get_strategy
 from config import get_shared_session
+from gemini_client import get_answer, get_strategy
+from glossary import GLOSSARY, find_terms
+from race_context import (
+    build_context, compute_standings, fastest_lap_so_far, flag_status,
+    format_laptime, gap_seconds, weather_at,
+)
 
-# def _f1_credentials():
-#     try:
-#         return st.secrets["F1_USERNAME"], st.secrets["F1_PASSWORD"]
-#     except Exception:
-#         return os.environ.get("F1_USERNAME"), os.environ.get("F1_PASSWORD")
-
-
-# @st.cache_data(show_spinner="Loading race data...")
-# def _load_session():
-#     user, pw = _f1_credentials()
-#     if user and pw:
-#         os.environ["F1_USERNAME"] = user
-#         os.environ["F1_PASSWORD"] = pw
-
-#     session = fastf1.get_session(2024, "São Paulo", "R")
-#     session.load(telemetry=False, weather=True, messages=False)
-
-#     if session.laps is None or len(session.laps) == 0:
-#         raise RuntimeError(
-#             "F1 timing data came back empty. Check F1_USERNAME / F1_PASSWORD "
-#             "in Streamlit secrets, or try again in a minute."
-#         )
-#     return session
+TICK_SECONDS = 5
+SUGGESTED_QUESTIONS = [
+    "What just happened?",
+    "Why did the race stop?",
+    "How are my drivers doing?",
+    "What is an undercut?",
+]
 
 
-def _build_results(session):
-    res = session.results.copy()
-    if "Abbreviation" in res.columns and "Driver" not in res.columns:
-        res = res.rename(columns={"Abbreviation": "Driver"})
-    if "DriverNumber" not in res.columns:
-        if "DriverNumber" in session.laps.columns:
-            num_map = (
-                session.laps[["Driver", "DriverNumber"]]
-                .dropna()
-                .drop_duplicates("Driver")
-                .set_index("Driver")["DriverNumber"]
-                .to_dict()
-            )
-            res["DriverNumber"] = res["Driver"].map(num_map)
-        else:
-            res["DriverNumber"] = ""
-    if "FullName" not in res.columns:
-        res["FullName"] = res.get("Driver", "?")
-    if "TeamName" not in res.columns:
-        res["TeamName"] = ""
-    if "TeamColor" not in res.columns:
-        res["TeamColor"] = "#888888"
-    return res[["Driver", "FullName", "DriverNumber", "TeamName", "TeamColor"]].copy()
+@st.cache_data(show_spinner=False, max_entries=200)
+def _standings(_session, lap):
+    # _session starts with an underscore so Streamlit does not try to hash it.
+    return compute_standings(_session, lap)
 
 
-def _flag_status(session, current_lap):
-    if session.track_status.empty:
-        return "GREEN", "#00cc44"
-    lap_times = session.laps[session.laps["LapNumber"] == current_lap]["Time"]
-    if lap_times.empty:
-        return "GREEN", "#00cc44"
-    ts_before = session.track_status[session.track_status["Time"] <= lap_times.max()]
-    if ts_before.empty:
-        return "GREEN", "#00cc44"
-    status_code = str(ts_before.iloc[-1]["Status"])
-    status_map = {
-        "1": ("GREEN", "#00cc44"),
-        "2": ("YELLOW", "#ffcc00"),
-        "4": ("SAFETY CAR", "#ff9900"),
-        "5": ("RED FLAG", "#ff3333"),
-        "6": ("VSC", "#ffcc00"),
-    }
-    return status_map.get(status_code, ("GREEN", "#00cc44"))
+def _reset_replay():
+    st.session_state.live_lap = 0
+    st.session_state.live_last_tick = None
+    st.session_state.live_final_rerun = False
+    st.session_state.strategy_text = None
 
 
-def _format_laptime(td):
-    """Format a pandas Timedelta as M:SS.mmm, or '—' if missing."""
-    if pd.isna(td):
-        return "—"
-    try:
-        total_seconds = td.total_seconds()
-    except Exception:
-        return "—"
-    minutes = int(total_seconds // 60)
-    seconds = total_seconds - minutes * 60
-    return f"{minutes}:{seconds:06.3f}"
+def _advance_lap(total_laps):
+    """
+    Move the replay forward by one lap, but only if a full tick has passed.
+    Time-based, so a click on any widget inside the live panel does not skip laps.
+    """
+    if st.session_state.live_paused or st.session_state.live_lap >= total_laps:
+        return
+    now = time.time()
+    last = st.session_state.live_last_tick
+    if last is None or now - last >= TICK_SECONDS - 0.5:
+        st.session_state.live_lap += 1
+        st.session_state.live_last_tick = now
 
 
-def _tyre_expected_life():
-    """Approximate expected tyre life per compound (in laps). Simple heuristic."""
-    return {
-        "SOFT": "~15–20 laps",
-        "MEDIUM": "~25–30 laps",
-        "HARD": "~35–40 laps",
-        "INTERMEDIATE": "~25–35 laps (wet-dependent)",
-        "WET": "~20–30 laps (heavy rain)",
-    }
-
-
-def _fastest_lap_so_far(laps_to_now):
-    """Return (driver, formatted_laptime) for the fastest lap set by ANY driver so far."""
-    if laps_to_now.empty or "LapTime" not in laps_to_now.columns:
-        return None, None
-    valid = laps_to_now.dropna(subset=["LapTime"])
-    if valid.empty:
-        return None, None
-    fastest_row = valid.loc[valid["LapTime"].idxmin()]
-    return fastest_row.get("Driver", "?"), _format_laptime(fastest_row["LapTime"])
-
-
-def _render_leaderboard(display_rows):
+def _render_leaderboard(standings):
     with st.container(height=440, border=False):
-        for r in display_rows:
+        for r in standings.to_dict("records"):
             c1, c2, c3, c4, c5 = st.columns([0.4, 3, 1.8, 1.2, 1.8])
             c1.markdown(
-                f"<div style='background:{r['Colour']};width:8px;height:24px;border-radius:2px'></div>",
+                f"<div style='background:{r['TeamColor']};width:8px;height:24px;border-radius:2px'></div>",
                 unsafe_allow_html=True,
             )
             if r["Status"] == "DNF":
-                c2.markdown(f"~~**{r['No']} {r['Driver']}**~~")
+                c2.markdown(f"~~**{r['DriverNumber']} {r['FullName']}**~~")
             else:
-                c2.markdown(f"**P{r['P']}** · {r['No']} {r['Driver']}")
-            c3.caption(r["Team"])
+                c2.markdown(f"**P{r['Position']}** · {r['DriverNumber']} {r['FullName']}")
+            c3.caption(r["TeamName"])
             c4.write(r["Gap"])
-            c5.caption(r["Tyre"])
+            c5.caption(r["TyreText"] if r["Status"] == "RUNNING" else "-")
 
 
-def _render_favourites(laps_to_now, results, merged):
+def _favourite_details(name, standings, session, lap):
+    row = standings[standings["FullName"] == name]
+    if row.empty:
+        return f"**{name}** — driver not found."
+    r = row.iloc[0]
+    head = f"**{name}** ({r['Driver']}) — {r['TeamName']}"
+    if r["Status"] == "DNF":
+        return f"{head}\n\n- Out of the race after lap {int(r['RetiredAfterLap'])}"
+
+    running = standings[standings["Status"] == "RUNNING"]
+    pos = int(r["Position"])
+    L = int(r["LastLap"])
+
+    def neighbour(offset):
+        other = running[running["Position"] == pos + offset]
+        if other.empty:
+            return "—"
+        o = other.iloc[0]
+        g = gap_seconds(session, r["Driver"], o["Driver"], min(L, int(o["LastLap"])))
+        gap = "—" if g is None else f"{abs(g):.1f}s"
+        return f"{o['FullName']} (+{gap})"
+
+    valid = session.laps[(session.laps["Driver"] == r["Driver"]) & (session.laps["LapNumber"] <= lap)]["LapTime"].dropna()
+    best = format_laptime(valid.min()) if not valid.empty else "—"
+    tyre = f"{r['Compound'] or '-'} ({r['TyreLife']} laps)" if r["TyreLife"] is not None else (r["Compound"] or "-")
+    return (
+        f"{head}\n\n"
+        f"- Position: **P{pos}** (gap to leader: {r['Gap']})\n"
+        f"- Tyre: {tyre}\n"
+        f"- Current lap time: **{format_laptime(r['LapTime'])}**\n"
+        f"- Fastest lap so far: **{best}**\n"
+        f"- Ahead: {neighbour(-1)}\n"
+        f"- Behind: {neighbour(+1)}"
+    )
+
+
+def _render_favourites(standings, session, lap):
     st.markdown("**Select drivers to follow closely**")
-    all_driver_names = results.sort_values("FullName")["FullName"].tolist()
+    names = sorted(standings["FullName"].tolist())
 
-    # Preserve previous selections across reruns
     prev_fav1 = st.session_state.get("fav1", "None")
-    prev_fav2 = st.session_state.get("fav2", "None")
+    options1 = ["None"] + names
+    options2 = ["None"] + [d for d in names if d != prev_fav1]
 
-    # Options for Driver 2 exclude whatever is picked in Driver 1
-    options1 = ["None"] + all_driver_names
-    options2 = ["None"] + [d for d in all_driver_names if d != prev_fav1]
-
-    fav_col1, fav_col2 = st.columns(2)
-    with fav_col1:
+    col1, col2 = st.columns(2)
+    with col1:
         fav1 = st.selectbox("Driver 1", options1, key="fav1")
-    with fav_col2:
+    with col2:
         fav2 = st.selectbox("Driver 2", options2, key="fav2")
 
-    # Guard: if somehow both end up the same (e.g. old state), reset Driver 2
     if fav1 != "None" and fav1 == fav2:
         st.session_state["fav2"] = "None"
         fav2 = "None"
@@ -156,62 +123,72 @@ def _render_favourites(laps_to_now, results, merged):
         st.caption("Select a driver above to see their live details here.")
         return
 
-    def details(driver_name):
-        row = results[results["FullName"] == driver_name]
-        if row.empty:
-            return f"**{driver_name}** — driver not found."
-        abbrev = row.iloc[0]["Driver"]
-        team = row.iloc[0].get("TeamName", "") or ""
-        driver_laps = laps_to_now[laps_to_now["Driver"] == abbrev].sort_values("LapNumber")
-        if driver_laps.empty:
-            return f"**{driver_name}** ({abbrev}) — no lap data yet (DNF or not started)."
-
-        last = driver_laps.iloc[-1]
-        pos = int(last["Position"]) if pd.notna(last["Position"]) else "-"
-        tyre = last.get("Compound", "-")
-        tyre_life = last.get("TyreLife", "-")
-
-        current_laptime = _format_laptime(last.get("LapTime"))
-        valid_laptimes = driver_laps["LapTime"].dropna()
-        fastest_laptime = _format_laptime(valid_laptimes.min()) if not valid_laptimes.empty else "—"
-
-        gap_leader = "—"
-        if not merged.empty and "Time" in merged.columns and pd.notna(last.get("Time")):
-            leader_time = merged.iloc[0]["Time"]
-            if pd.notna(leader_time):
-                gap_leader = f"+{(last['Time'] - leader_time).total_seconds():.1f}s"
-
-        ahead_info, behind_info = "—", "—"
-        if isinstance(pos, int) and pos > 1 and not merged.empty:
-            car_ahead = merged[merged["Position"] == pos - 1]
-            if not car_ahead.empty and pd.notna(last.get("Time")):
-                gap = (last["Time"] - car_ahead.iloc[0]["Time"]).total_seconds()
-                ahead_info = f"{car_ahead.iloc[0].get('FullName', '?')} (+{gap:.1f}s)"
-        if isinstance(pos, int) and not merged.empty and pos < len(merged):
-            car_behind = merged[merged["Position"] == pos + 1]
-            if not car_behind.empty and pd.notna(last.get("Time")):
-                gap = (car_behind.iloc[0]["Time"] - last["Time"]).total_seconds()
-                behind_info = f"{car_behind.iloc[0].get('FullName', '?')} (+{gap:.1f}s)"
-
-        return (
-            f"**{driver_name}** ({abbrev}) — {team}\n\n"
-            f"- Position: **P{pos}** (gap to leader: {gap_leader})\n"
-            f"- Tyre: {tyre} ({int(tyre_life) if pd.notna(tyre_life) else '-'} laps)\n"
-            f"- Current lap time: **{current_laptime}**\n"
-            f"- Fastest lap so far: **{fastest_laptime}**\n"
-            f"- Ahead: {ahead_info}\n"
-            f"- Behind: {behind_info}"
-        )
-
     d1, d2 = st.columns(2)
     with d1:
         if fav1 != "None":
-            st.markdown(details(fav1))
+            st.markdown(_favourite_details(fav1, standings, session, lap))
     with d2:
         if fav2 != "None":
-            st.markdown(details(fav2))
+            st.markdown(_favourite_details(fav2, standings, session, lap))
+
+
+def _render_qa(session):
+    """'What did I miss?' box. Lives outside the auto-refreshing panel so typing is never interrupted."""
+    st.divider()
+    st.subheader("💬 What did I miss?")
+    st.caption("Ask anything about the race so far. Answers come only from the lap data, and jargon gets explained.")
+
+    clicked = None
+    cols = st.columns(len(SUGGESTED_QUESTIONS))
+    for col, q in zip(cols, SUGGESTED_QUESTIONS):
+        if col.button(q, key=f"suggest_{q}", use_container_width=True):
+            clicked = q
+
+    with st.form("qa_form", clear_on_submit=True):
+        typed = st.text_input(
+            "Your question",
+            max_chars=300,
+            placeholder="e.g. Why is there a safety car? Is Hamilton on a good strategy?",
+        )
+        submitted = st.form_submit_button("Ask")
+
+    question = clicked or (typed.strip() if submitted else "")
+    if question:
+        lap = int(st.session_state.live_lap)
+        if lap < 1:
+            st.warning("The replay has not started yet. Ask again in a moment.")
+        else:
+            standings = _standings(session, lap)
+            favourites = [st.session_state.get("fav1"), st.session_state.get("fav2")]
+            context = build_context(session, lap, standings, favourites)
+            with st.spinner("Checking the race data..."):
+                answer = get_answer(question, context)
+            st.session_state.qa_history.insert(0, {"q": question, "a": answer, "lap": lap})
+            del st.session_state.qa_history[6:]
+
+    for item in st.session_state.qa_history:
+        with st.container(border=True):
+            st.markdown(f"**🙋 {item['q']}**")
+            st.markdown(item["a"])
+            st.caption(f"Based on the race as of lap {item['lap']}")
+            terms = find_terms(item["a"] + " " + item["q"])
+            if terms:
+                with st.expander("📖 Jargon in this answer"):
+                    for term, meaning in terms:
+                        st.markdown(f"**{term}**: {meaning}")
+
+    with st.expander("📖 F1 jargon buster"):
+        for term, (_, meaning) in GLOSSARY.items():
+            st.markdown(f"**{term}**: {meaning}")
+
 
 def render():
+    for key, default in [
+        ("live_lap", 0), ("live_paused", False), ("live_last_tick", None),
+        ("live_final_rerun", False), ("strategy_text", None), ("qa_history", []),
+    ]:
+        st.session_state.setdefault(key, default)
+
     if st.button("← Back to Home"):
         st.session_state.page = "home"
         st.session_state.strategy_text = None
@@ -221,21 +198,39 @@ def render():
 
     session = get_shared_session()
     total_laps = int(session.laps["LapNumber"].max())
+    finished = st.session_state.live_lap >= total_laps
 
-    @st.fragment(run_every="5s")
+    # Controls live outside the fragment so a click re-decorates it with the right timer
+    c_pause, c_restart, _ = st.columns([1, 1, 6])
+    if c_pause.button("▶ Resume" if st.session_state.live_paused else "⏸ Pause", disabled=finished):
+        st.session_state.live_paused = not st.session_state.live_paused
+        st.rerun()
+    if c_restart.button("↺ Restart"):
+        _reset_replay()
+        st.session_state.live_paused = False
+        st.rerun()
+
+    # No timer once the race is over or paused, so the page stops re-running every 5 seconds
+    run_every = None if (st.session_state.live_paused or finished) else f"{TICK_SECONDS}s"
+
+    @st.fragment(run_every=run_every)
     def live_dashboard():
-        current_lap = st.session_state.live_lap
-        st.caption(f"Simulated live playback · Lap {current_lap} / {total_laps}")
+        _advance_lap(total_laps)
+        lap = st.session_state.live_lap
 
-        results = _build_results(session)
-        flag_status, flag_color = _flag_status(session, current_lap)
+        status_note = " · ⏸ paused" if st.session_state.live_paused else (" · 🏁 finished" if lap >= total_laps else "")
+        st.caption(f"Simulated replay of a past race · Lap {lap} / {total_laps}{status_note}")
 
-        # Compute once — used by both columns
-        laps_to_now = session.laps[session.laps["LapNumber"] <= current_lap].copy()
+        if lap < 1:
+            st.info("Waiting for lap 1 data...")
+            return
+
+        standings = _standings(session, lap)
+        flag, flag_color = flag_status(session, lap)
+        weather = weather_at(session, lap)
 
         left_col, right_col = st.columns([1, 1.6])
 
-        # --- Left column ---
         with left_col:
             st.markdown(
                 f"""
@@ -245,146 +240,49 @@ def render():
                     🎥 LIVE STREAM (Dummy)
                     <div style="position:absolute;top:10px;left:10px;background:{flag_color};
                         color:#000;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:bold;">
-                        {flag_status}</div>
+                        {flag}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            
+
             st.markdown("**Fastest lap so far**")
-            fl_driver, fl_time = _fastest_lap_so_far(laps_to_now)
+            fl_driver, fl_time = fastest_lap_so_far(session, lap)
             if fl_driver is None:
                 st.caption("No valid lap times yet.")
             else:
                 st.info(f"🟣 **{fl_time}** — {fl_driver}")
 
-            # --- Weather: real if available, fallback to plausible São Paulo values ---
             st.markdown("**Weather**")
-
-            # Fallback defaults (São Paulo 2024 typical wet-race conditions)
-            FALLBACK_WEATHER = {
-                "air": "22.0",
-                "track": "28.0",
-                "humidity": "78",
-                "rain": "Yes",
-            }
-            weather_dict = dict(FALLBACK_WEATHER)
-            weather_source = "fallback"
-
-            weather = None
-            try:
-                weather = session.weather_data
-            except Exception:
-                weather = None
-
-            if weather is not None and not weather.empty:
-                try:
-                    lap_times = session.laps[session.laps["LapNumber"] == current_lap]["Time"]
-                    current_lap_time = lap_times.max() if not lap_times.empty else None
-                    if pd.notna(current_lap_time):
-                        w = weather.iloc[(weather["Time"] - current_lap_time).abs().argsort()[:1]].iloc[0]
-                    else:
-                        w = weather.iloc[0]
-                    weather_dict = {
-                        "air": f"{w['AirTemp']:.1f}",
-                        "track": f"{w['TrackTemp']:.1f}",
-                        "humidity": f"{w['Humidity']:.0f}",
-                        "rain": "Yes" if w["Rainfall"] else "No",
-                    }
-                    weather_source = "live"
-                except Exception:
-                    weather_source = "fallback"
-
-            # Render (same UI whether real or fallback)
             w1, w2 = st.columns(2)
-            w1.metric("Air", f"{weather_dict['air']}°C")
-            w2.metric("Track", f"{weather_dict['track']}°C")
+            w1.metric("Air", f"{weather['air']}°C")
+            w2.metric("Track", f"{weather['track']}°C")
             w3, w4 = st.columns(2)
-            w3.metric("Humidity", f"{weather_dict['humidity']}%")
-            w4.metric("Rain", weather_dict["rain"])
-
-           
-            
-        # --- Right column ---
-        display_rows = []
-        merged = pd.DataFrame()
+            w3.metric("Humidity", f"{weather['humidity']}%")
+            w4.metric("Rain", weather["rain"])
+            if weather["source"] == "fallback":
+                st.caption("Weather data unavailable, showing typical values.")
 
         with right_col:
             tab_lb, tab_fav = st.tabs(["🏁 Leaderboard", "⭐ My Drivers"])
-
             with tab_lb:
-                active_drivers = (
-                    laps_to_now["Driver"].dropna().unique().tolist()
-                    if not laps_to_now.empty else []
-                )
-                all_registered = results["Driver"].dropna().unique().tolist()
-
-                if laps_to_now.empty:
-                    st.info(f"Waiting for lap {current_lap} data...")
-                else:
-                    latest = (
-                        laps_to_now.sort_values("LapNumber")
-                        .groupby("Driver", as_index=False)
-                        .last()
-                    )
-                    merged = latest.merge(results, on="Driver", how="left")
-                    merged = merged.sort_values("Position").reset_index(drop=True)
-                    leader_time = merged.iloc[0]["Time"] if "Time" in merged.columns else None
-
-                    for i, row in merged.iterrows():
-                        pos = int(row["Position"]) if pd.notna(row["Position"]) else i + 1
-                        driver_name = row.get("FullName") or row.get("Driver", "?")
-                        number = row.get("DriverNumber", "")
-                        number = "" if pd.isna(number) else (str(int(number)) if isinstance(number, (int, float)) else str(number))
-                        team = row.get("TeamName", "") or ""
-                        colour = row.get("TeamColor", "#888888") or "#888888"
-
-                        gap_str = "Leader"
-                        if i > 0 and leader_time is not None and pd.notna(row.get("Time")):
-                            gap_str = f"+{(row['Time'] - leader_time).total_seconds():.1f}s"
-
-                        tyre = row.get("Compound", "")
-                        tyre_life = row.get("TyreLife", "")
-                        tyre_str = f"{tyre} ({int(tyre_life)})" if pd.notna(tyre_life) else (str(tyre) if tyre else "-")
-
-                        display_rows.append({
-                            "P": pos, "No": number, "Driver": driver_name,
-                            "Team": team, "Gap": gap_str, "Tyre": tyre_str,
-                            "Colour": colour, "Status": "RUNNING",
-                        })
-
-                    for drv in all_registered:
-                        if drv not in active_drivers:
-                            d_row = results[results["Driver"] == drv]
-                            if d_row.empty:
-                                continue
-                            d = d_row.iloc[0]
-                            d_num = d.get("DriverNumber", "")
-                            d_num = "" if pd.isna(d_num) else (str(int(d_num)) if isinstance(d_num, (int, float)) else str(d_num))
-                            display_rows.append({
-                                "P": "—", "No": d_num,
-                                "Driver": d.get("FullName") or drv,
-                                "Team": d.get("TeamName", "") or "",
-                                "Gap": "DNF", "Tyre": "-",
-                                "Colour": d.get("TeamColor", "#555555") or "#555555",
-                                "Status": "DNF",
-                            })
-
-                    _render_leaderboard(display_rows)
-
+                _render_leaderboard(standings)
             with tab_fav:
-                _render_favourites(laps_to_now, results, merged)
+                _render_favourites(standings, session, lap)
 
-        # --- Strategy ---
         st.subheader("🤖 Strategy Suggestion")
         if st.button("Get AI strategy for current conditions"):
-            lb_lines = [f"P{r['P']} {r['Driver']} ({r['Tyre']})" for r in display_rows[:10]]
+            top10 = standings[standings["Status"] == "RUNNING"].head(10)
+            lb_lines = [f"P{r.Position} {r.FullName} ({r.TyreText})" for r in top10.itertuples()]
             with st.spinner("Gemini is thinking..."):
-                st.session_state.strategy_text = get_strategy(weather_dict, "\n".join(lb_lines))
+                st.session_state.strategy_text = get_strategy(weather, "\n".join(lb_lines))
         if st.session_state.strategy_text:
             st.info(st.session_state.strategy_text)
 
-        if current_lap < total_laps:
-            st.session_state.live_lap += 1
+        # Race over: do one full-page rerun so the fragment is re-created without its timer
+        if lap >= total_laps and not st.session_state.live_final_rerun:
+            st.session_state.live_final_rerun = True
+            st.rerun()
 
     live_dashboard()
+    _render_qa(session)

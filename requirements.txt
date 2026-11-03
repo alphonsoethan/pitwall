@@ -2,3 +2,4 @@ streamlit
 fastf1
 pandas
 google-genai
+pyarrow
