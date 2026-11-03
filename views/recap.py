@@ -12,7 +12,7 @@ def render_setup():
         st.rerun()
 
     st.title("🎬 Race Recap")
-    st.caption("São Paulo 2024 · Fixed for this prototype")
+    st.caption("São Paulo 2024")
     st.write("Pick a driver and the lap you left at. Following a specific driver is optional.")
 
     max_laps = int(RACE_MAP["São Paulo 2024"]["laps"])

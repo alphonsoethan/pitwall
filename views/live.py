@@ -303,9 +303,7 @@ def render():
             w3.metric("Humidity", f"{weather_dict['humidity']}%")
             w4.metric("Rain", weather_dict["rain"])
 
-            if weather_source == "fallback":
-                st.caption("ℹ️ Weather API unavailable — showing typical São Paulo 2024 conditions.")
-                
+           
             
         # --- Right column ---
         display_rows = []

@@ -111,17 +111,6 @@ If a red flag or safety car shaped the result, name it. Otherwise say the race w
 Do NOT invent events."""
     return _call_gemini(prompt)
 
-def get_race_verdict(summary):
-    prompt = f"""You are an F1 analyst. Given this race summary, write a 60-100 word verdict on the race's defining strategic moment.
-
-{summary}
-
-Rules:
-- Cite the winner and the key strategic call (or red flag) that decided it.
-- Do NOT invent events.
-- Analytical but accessible tone."""
-    return _call_gemini(prompt)
-
 def get_verdict(summary):
     prompt = f"""You are an F1 strategy analyst. Given this race summary, write a 60-100 word verdict on whether the driver's strategy worked after the cutoff lap.
 
