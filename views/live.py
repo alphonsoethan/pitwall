@@ -21,6 +21,17 @@ SUGGESTED_QUESTIONS = [
 ]
 
 
+def _total_laps(session):
+    """The scheduled race distance, which may exceed the max lap present in the data."""
+    try:
+        n = int(session.total_laps)
+        if n > 0:
+            return n
+    except Exception:
+        pass
+    return int(session.laps["LapNumber"].max())
+
+
 @st.cache_data(show_spinner=False, max_entries=200)
 def _standings(_session, lap):
     return compute_standings(_session, lap)
@@ -39,14 +50,12 @@ def _advance_lap(total_laps):
     now = time.time()
     last = st.session_state.live_last_tick
     if last is None:
-        # First run: initialise the timer but do NOT advance the lap.
-        # Keeps lap 1 visible for a full tick before the replay starts moving.
         st.session_state.live_last_tick = now
         return
     if now - last >= TICK_SECONDS - 0.5:
-        st.session_state.live_lap += 1
+        st.session_state.live_lap = min(st.session_state.live_lap + 1, total_laps)
         st.session_state.live_last_tick = now
-        
+
 
 def _render_leaderboard(standings, finished=False):
     with st.container(height=440, border=False):
@@ -212,8 +221,18 @@ def render():
     st.title("📡 Livestream Mode")
 
     session = get_shared_session()
-    total_laps = int(session.laps["LapNumber"].max())
+    total_laps = _total_laps(session)
     finished = st.session_state.live_lap >= total_laps
+
+    # --- Pause / Restart placed near the top, after the title ---
+    c_pause, c_restart, _ = st.columns([1, 1, 6])
+    if c_pause.button("▶ Resume" if st.session_state.live_paused else "⏸ Pause",
+                      disabled=finished, help="Freeze the replay. Any in-flight AI answer will be cancelled."):
+        st.session_state.live_paused = not st.session_state.live_paused
+    if c_restart.button("↺ Restart"):
+        _reset_replay()
+        st.session_state.live_paused = False
+        st.rerun()
 
     run_every = None if (st.session_state.live_paused or finished) else f"{TICK_SECONDS}s"
 
@@ -290,11 +309,3 @@ def render():
 
     live_dashboard()
     _render_qa(session)
-    
-    c_pause, c_restart, _ = st.columns([1, 1, 6])
-    if c_pause.button("▶ Resume" if st.session_state.live_paused else "⏸ Pause", disabled=finished):
-        st.session_state.live_paused = not st.session_state.live_paused
-    if c_restart.button("↺ Restart"):
-        _reset_replay()
-        st.session_state.live_paused = False
-        st.rerun()
