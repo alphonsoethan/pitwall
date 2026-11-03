@@ -1,7 +1,7 @@
 # race_context.py
 """
 Race-state logic shared by the live view and the Q&A feature:
-  - compute_standings: leaderboard at a given lap, with real DNFs and correct gaps
+  - compute_standings: leaderboard at a given lap, with real DNFs, DNS and correct gaps
   - detect_events:     safety cars, red flags, pit stops, retirements
   - build_context:     the text block Gemini answers questions from
 
@@ -31,7 +31,7 @@ FALLBACK_WEATHER = {"air": "22.0", "track": "28.0", "humidity": "78", "rain": "Y
 STANDINGS_COLUMNS = [
     "Driver", "FullName", "DriverNumber", "TeamName", "TeamColor", "Status", "Position",
     "LastLap", "RetiredAfterLap", "Gap", "GapSeconds", "Interval", "Compound", "TyreLife",
-    "TyreText", "LapTime",
+    "TyreText", "LapTime", "PitStatus",
 ]
 
 
@@ -145,14 +145,32 @@ def _laps_label(n):
     return f"+{n} LAP" if n == 1 else f"+{n} LAPS"
 
 
+def _pit_status(row):
+    """
+    Returns 'IN' if the driver is stationary in the pits at the end of their last lap,
+    'OUT' if they have just left the pits, or '' otherwise.
+    FastF1 records PitInTime on the lap a driver enters, and PitOutTime on the next lap.
+    """
+    if row is None:
+        return ""
+    pit_in = row.get("PitInTime")
+    pit_out = row.get("PitOutTime")
+    if pd.notna(pit_in) and pd.isna(pit_out):
+        return "IN"
+    if pd.isna(pit_in) and pd.notna(pit_out):
+        return "OUT"
+    return ""
+
+
 # --------------------------------------------------------------- standings
 def compute_standings(session, lap):
     """
     Leaderboard as it stood at the end of `lap`.
 
     DNF: a driver whose last completed lap is behind the current lap (and who was not
-    classified as a finisher). Gaps: always measured between two cars on the same lap
-    number; cars a lap or more down show "+1 LAP" instead of a misleading time.
+    classified as a finisher). DNS: a driver in results but with no lap at all.
+    Gaps: always measured between two cars on the same lap number; cars a lap or more
+    down show "+1 LAP" instead of a misleading time.
     """
     lap = int(lap)
     results = build_results(session)
@@ -164,15 +182,27 @@ def compute_standings(session, lap):
 
     final_lap = laps.groupby("Driver")["LapNumber"].max()
     last = upto.sort_values("LapNumber").groupby("Driver").tail(1).set_index("Driver")
+    laps_drivers = set(session.laps["Driver"].dropna().unique())
 
     running, out = [], []
     for r in results.itertuples(index=False):
-        fl = int(final_lap.get(r.Driver, 0))
-        retired = _is_retired(r.Status, fl, lap, total)
         base = {
             "Driver": r.Driver, "FullName": r.FullName, "DriverNumber": r.DriverNumber,
             "TeamName": r.TeamName or "", "TeamColor": r.TeamColor,
         }
+
+        # DNS: driver present in results but never completed a lap in this session
+        if r.Driver not in laps_drivers:
+            out.append({
+                **base, "Status": "DNS", "RetiredAfterLap": None, "Position": None,
+                "Gap": "DNS", "GapSeconds": None, "Interval": "—",
+                "Compound": "", "TyreLife": None, "TyreText": "-",
+                "LapTime": pd.NaT, "LastLap": 0, "PitStatus": "",
+            })
+            continue
+
+        fl = int(final_lap.get(r.Driver, 0))
+        retired = _is_retired(r.Status, fl, lap, total)
         row = last.loc[r.Driver] if r.Driver in last.index else None
         if row is not None:
             comp = row.get("Compound")
@@ -183,10 +213,11 @@ def compute_standings(session, lap):
                 "Compound": comp, "TyreLife": age,
                 "TyreText": f"{comp} ({age})" if comp and age is not None else (comp or "-"),
                 "LapTime": row.get("LapTime"), "LastLap": int(row["LapNumber"]),
+                "PitStatus": _pit_status(row),
             })
         else:
             base.update({"Compound": "", "TyreLife": None, "TyreText": "-",
-                         "LapTime": pd.NaT, "LastLap": 0})
+                         "LapTime": pd.NaT, "LastLap": 0, "PitStatus": ""})
 
         if retired:
             out.append({**base, "Status": "DNF", "RetiredAfterLap": fl, "Position": None,
@@ -228,10 +259,13 @@ def compute_standings(session, lap):
         run_df["Gap"], run_df["GapSeconds"], run_df["Interval"] = gaps, gap_secs, intervals
         run_df = run_df.drop(columns=["_pos", "_time"])
 
-    # Build the result from plain records (running cars first, then retirements, latest first)
-    # rather than pd.concat, which warns about empty or all-NA columns.
+    # Build the result from plain records (running cars first, then retirements/DNS).
     records = run_df.to_dict("records") if not run_df.empty else []
-    records += sorted(out, key=lambda d: d["RetiredAfterLap"], reverse=True)
+    # DNFs sorted by retirement lap (latest first); DNS last
+    dnfs = [d for d in out if d["Status"] == "DNF"]
+    dnss = [d for d in out if d["Status"] == "DNS"]
+    records += sorted(dnfs, key=lambda d: d["RetiredAfterLap"], reverse=True)
+    records += dnss
     return pd.DataFrame(records, columns=STANDINGS_COLUMNS)
 
 
@@ -293,7 +327,6 @@ def detect_events(session, upto_lap):
     total = int(laps["LapNumber"].max())
     events = []
 
-    # Track status changes, mapped to the lap the leader was on at that moment
     ts = getattr(session, "track_status", None)
     if ts is not None and not ts.empty:
         leader_end = laps.groupby("LapNumber")["Time"].min().sort_index()
@@ -311,7 +344,6 @@ def detect_events(session, upto_lap):
             if lap_no <= upto_lap and code in STATUS_EVENT_TEXT:
                 events.append({"lap": lap_no, "kind": "status", "text": STATUS_EVENT_TEXT[code]})
 
-    # Pit stops: a new stint means the driver pitted at the end of the previous lap
     for drv, g in laps.groupby("Driver"):
         g = g.sort_values("LapNumber").reset_index(drop=True)
         if "Stint" not in g.columns:
@@ -329,7 +361,6 @@ def detect_events(session, upto_lap):
             swap = f": {old} to {new} tyres" if old and new else ""
             events.append({"lap": in_lap, "kind": "pit", "text": f"{drv} pitted{swap}"})
 
-    # Retirements
     final_lap = laps.groupby("Driver")["LapNumber"].max()
     for r in results.itertuples(index=False):
         fl = int(final_lap.get(r.Driver, 0))
@@ -381,13 +412,19 @@ def build_context(session, lap, standings, favourites=None, race_label="São Pau
 
     lines.append("\nRUNNING ORDER (position, driver code, name, team, gap to leader, interval to car ahead, tyre and its age in laps):")
     for r in standings[standings["Status"] == "RUNNING"].itertuples(index=False):
+        pit = " (currently in the pits)" if r.PitStatus == "IN" else ""
         lines.append(f"P{r.Position} {r.Driver} {r.FullName} ({r.TeamName}) gap {r.Gap}, "
-                     f"interval {r.Interval}, tyre {r.TyreText}")
+                     f"interval {r.Interval}, tyre {r.TyreText}{pit}")
     dnfs = standings[standings["Status"] == "DNF"]
     if not dnfs.empty:
         lines.append("\nOUT OF THE RACE:")
         for r in dnfs.itertuples(index=False):
             lines.append(f"{r.Driver} {r.FullName} stopped after lap {r.RetiredAfterLap}")
+    dnss = standings[standings["Status"] == "DNS"]
+    if not dnss.empty:
+        lines.append("\nDID NOT START:")
+        for r in dnss.itertuples(index=False):
+            lines.append(f"{r.Driver} {r.FullName} did not start")
 
     events = detect_events(session, lap)
     keep = [e for e in events if e["kind"] != "pit"] + [e for e in events if e["kind"] == "pit"][-15:]
@@ -412,7 +449,10 @@ def build_context(session, lap, standings, favourites=None, race_label="São Pau
             r = row.iloc[0]
             if r["Status"] == "DNF":
                 lines.append(f"{name}: out of the race after lap {r['RetiredAfterLap']}")
+            elif r["Status"] == "DNS":
+                lines.append(f"{name}: did not start")
             else:
+                pit = " (currently in the pits)" if r["PitStatus"] == "IN" else ""
                 lines.append(f"{name}: P{r['Position']}, gap {r['Gap']}, interval {r['Interval']}, "
-                             f"tyre {r['TyreText']}, last lap {format_laptime(r['LapTime'])}")
-    return "\n".join(lines) 
+                             f"tyre {r['TyreText']}{pit}, last lap {format_laptime(r['LapTime'])}")
+    return "\n".join(lines)

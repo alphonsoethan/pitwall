@@ -23,7 +23,6 @@ SUGGESTED_QUESTIONS = [
 
 @st.cache_data(show_spinner=False, max_entries=200)
 def _standings(_session, lap):
-    # _session starts with an underscore so Streamlit does not try to hash it.
     return compute_standings(_session, lap)
 
 
@@ -35,10 +34,6 @@ def _reset_replay():
 
 
 def _advance_lap(total_laps):
-    """
-    Move the replay forward by one lap, but only if a full tick has passed.
-    Time-based, so a click on any widget inside the live panel does not skip laps.
-    """
     if st.session_state.live_paused or st.session_state.live_lap >= total_laps:
         return
     now = time.time()
@@ -48,7 +43,7 @@ def _advance_lap(total_laps):
         st.session_state.live_last_tick = now
 
 
-def _render_leaderboard(standings):
+def _render_leaderboard(standings, finished=False):
     with st.container(height=440, border=False):
         for r in standings.to_dict("records"):
             c1, c2, c3, c4, c5 = st.columns([0.4, 3, 1.8, 1.2, 1.8])
@@ -58,11 +53,21 @@ def _render_leaderboard(standings):
             )
             if r["Status"] == "DNF":
                 c2.markdown(f"~~**{r['DriverNumber']} {r['FullName']}**~~")
+            elif r["Status"] == "DNS":
+                c2.markdown(f"**{r['DriverNumber']} {r['FullName']}** <span style='color:#888'>DNS</span>",
+                            unsafe_allow_html=True)
             else:
-                c2.markdown(f"**P{int(r['Position'])}** · {r['DriverNumber']} {r['FullName']}")
+                tag = " 🏁" if finished else ""
+                c2.markdown(f"**P{int(r['Position'])}** · {r['DriverNumber']} {r['FullName']}{tag}")
             c3.caption(r["TeamName"])
             c4.write(r["Gap"])
-            c5.caption(r["TyreText"] if r["Status"] == "RUNNING" else "-")
+            if r["Status"] == "RUNNING":
+                tyre = r["TyreText"]
+                if r.get("PitStatus") == "IN":
+                    tyre += " 🅿️"
+                c5.caption(tyre)
+            else:
+                c5.caption("-")
 
 
 def _favourite_details(name, standings, session, lap):
@@ -71,6 +76,9 @@ def _favourite_details(name, standings, session, lap):
         return f"**{name}** — driver not found."
     r = row.iloc[0]
     head = f"**{name}** ({r['Driver']}) — {r['TeamName']}"
+
+    if r["Status"] == "DNS":
+        return f"{head}\n\n- Did not start"
     if r["Status"] == "DNF":
         return f"{head}\n\n- Out of the race after lap {int(r['RetiredAfterLap'])}"
 
@@ -90,6 +98,9 @@ def _favourite_details(name, standings, session, lap):
     valid = session.laps[(session.laps["Driver"] == r["Driver"]) & (session.laps["LapNumber"] <= lap)]["LapTime"].dropna()
     best = format_laptime(valid.min()) if not valid.empty else "—"
     tyre = f"{r['Compound'] or '-'} ({r['TyreLife']} laps)" if r["TyreLife"] is not None else (r["Compound"] or "-")
+    if r.get("PitStatus") == "IN":
+        tyre += " 🅿️ in pits"
+
     return (
         f"{head}\n\n"
         f"- Position: **P{pos}** (gap to leader: {r['Gap']})\n"
@@ -133,7 +144,6 @@ def _render_favourites(standings, session, lap):
 
 
 def _render_qa(session):
-    """'What did I miss?' box. Lives outside the auto-refreshing panel so typing is never interrupted."""
     st.divider()
     st.subheader("💬 What did I miss?")
     st.caption("Ask anything about the race so far. Answers come only from the lap data, and jargon gets explained.")
@@ -200,7 +210,6 @@ def render():
     total_laps = int(session.laps["LapNumber"].max())
     finished = st.session_state.live_lap >= total_laps
 
-    # Controls live outside the fragment so a click re-decorates it with the right timer
     c_pause, c_restart, _ = st.columns([1, 1, 6])
     if c_pause.button("▶ Resume" if st.session_state.live_paused else "⏸ Pause", disabled=finished):
         st.session_state.live_paused = not st.session_state.live_paused
@@ -210,15 +219,15 @@ def render():
         st.session_state.live_paused = False
         st.rerun()
 
-    # No timer once the race is over or paused, so the page stops re-running every 5 seconds
     run_every = None if (st.session_state.live_paused or finished) else f"{TICK_SECONDS}s"
 
     @st.fragment(run_every=run_every)
     def live_dashboard():
         _advance_lap(total_laps)
         lap = st.session_state.live_lap
+        at_finish = lap >= total_laps
 
-        status_note = " · ⏸ paused" if st.session_state.live_paused else (" · 🏁 finished" if lap >= total_laps else "")
+        status_note = " · ⏸ paused" if st.session_state.live_paused else (" · 🏁 finished" if at_finish else "")
         st.caption(f"Simulated replay of a past race · Lap {lap} / {total_laps}{status_note}")
 
         if lap < 1:
@@ -266,7 +275,7 @@ def render():
         with right_col:
             tab_lb, tab_fav = st.tabs(["🏁 Leaderboard", "⭐ My Drivers"])
             with tab_lb:
-                _render_leaderboard(standings)
+                _render_leaderboard(standings, finished=at_finish)
             with tab_fav:
                 _render_favourites(standings, session, lap)
 
@@ -279,8 +288,7 @@ def render():
         if st.session_state.strategy_text:
             st.info(st.session_state.strategy_text)
 
-        # Race over: do one full-page rerun so the fragment is re-created without its timer
-        if lap >= total_laps and not st.session_state.live_final_rerun:
+        if at_finish and not st.session_state.live_final_rerun:
             st.session_state.live_final_rerun = True
             st.rerun()
 
