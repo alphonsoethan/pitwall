@@ -260,9 +260,15 @@ def render():
 
 
             st.markdown("**Weather**")
-            weather = session.weather_data
             weather_dict = {"air": "N/A", "track": "N/A", "humidity": "N/A", "rain": "No"}
-            if not weather.empty:
+
+            weather = None
+            try:
+                weather = session.weather_data
+            except Exception:
+                weather = None
+
+            if weather is not None and not weather.empty:
                 lap_times = session.laps[session.laps["LapNumber"] == current_lap]["Time"]
                 current_lap_time = lap_times.max() if not lap_times.empty else None
                 if pd.notna(current_lap_time):
@@ -283,11 +289,6 @@ def render():
                 w4.metric("Rain", "Yes" if w["Rainfall"] else "No")
             else:
                 st.caption("Weather unavailable.")
-
-            # st.markdown("**Expected tyre life**")
-            # for compound, lifespan in _tyre_expected_life().items():
-            #     st.caption(f"- **{compound}**: {lifespan}")
-
             
         # --- Right column ---
         display_rows = []
