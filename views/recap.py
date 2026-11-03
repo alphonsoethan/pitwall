@@ -72,7 +72,7 @@ def _render_classification_table(session):
 
 def render_display():
     # Two actions: go back to the setup page (edit selection), or leave the recap entirely
-    b_edit, b_home, _ = st.columns([1, 1, 4])
+    b_home, b_edit = st.columns([1, 1, 4])
     if b_edit.button("✏️ Edit selection"):
         st.session_state.recap_text = None
         st.session_state.verdict_text = None
