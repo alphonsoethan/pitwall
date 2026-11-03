@@ -16,6 +16,7 @@ import pandas as pd
 RACE_YEAR = 2024
 RACE_EVENT = "São Paulo"
 RACE_EVENT_NAME = "São Paulo Grand Prix"  # what FastF1 reports as session.event["EventName"]
+RACE_TOTAL_LAPS = 71 
 RACE_SESSION = "R"
 DATA_DIR = Path(__file__).resolve().parent / "data" / "sao_paulo_2024"
 
@@ -69,7 +70,7 @@ class CachedSession:
 
     @property
     def total_laps(self):
-        return int(self.laps["LapNumber"].max())
+        return RACE_TOTAL_LAPS
 
 
 def _subset(df, cols):
