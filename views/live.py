@@ -2,22 +2,34 @@
 import pandas as pd
 import streamlit as st
 import fastf1
+import os
 
 from gemini_client import get_strategy
+from config import get_shared_session
+
+# def _f1_credentials():
+#     try:
+#         return st.secrets["F1_USERNAME"], st.secrets["F1_PASSWORD"]
+#     except Exception:
+#         return os.environ.get("F1_USERNAME"), os.environ.get("F1_PASSWORD")
 
 
-@st.cache_data(show_spinner="Loading race data...")
-def _load_session(year, race):
-    session = fastf1.get_session(year, race, "R")
-    session.load(telemetry=False, weather=False, messages=False)
-    # FastF1 can silently succeed with empty laps on Streamlit Cloud
-    if session.laps is None or len(session.laps) == 0:
-        raise RuntimeError(
-            f"F1 timing data for {race} {year} came back empty. "
-            "This usually means the official F1 API rejected the request "
-            "(common on cloud IPs without authentication). Try again in a minute."
-        )
-    return session
+# @st.cache_data(show_spinner="Loading race data...")
+# def _load_session():
+#     user, pw = _f1_credentials()
+#     if user and pw:
+#         os.environ["F1_USERNAME"] = user
+#         os.environ["F1_PASSWORD"] = pw
+
+#     session = fastf1.get_session(2024, "São Paulo", "R")
+#     session.load(telemetry=False, weather=True, messages=False)
+
+#     if session.laps is None or len(session.laps) == 0:
+#         raise RuntimeError(
+#             "F1 timing data came back empty. Check F1_USERNAME / F1_PASSWORD "
+#             "in Streamlit secrets, or try again in a minute."
+#         )
+#     return session
 
 
 def _build_results(session):
@@ -207,7 +219,7 @@ def render():
 
     st.title("📡 Livestream Mode")
 
-    session = _load_session()
+    session = get_shared_session()
     total_laps = int(session.laps["LapNumber"].max())
 
     @st.fragment(run_every="5s")
