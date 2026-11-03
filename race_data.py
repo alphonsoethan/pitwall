@@ -22,9 +22,14 @@ def get_drivers(session):
 
 
 def get_driver_laps(session, driver):
-    laps = session.laps.pick_drivers(driver).copy()
-    laps = laps.sort_values("LapNumber")
-    return laps
+    # Works on both a FastF1 session and the cached session (plain DataFrame):
+    # match the 3-letter code ("VER") or the car number ("1").
+    all_laps = session.laps
+    key = str(driver).strip()
+    mask = all_laps["Driver"].astype(str).str.upper() == key.upper()
+    if "DriverNumber" in all_laps.columns:
+        mask = mask | (all_laps["DriverNumber"].astype(str) == key)
+    return all_laps[mask].copy().sort_values("LapNumber")
 
 
 def _build_status_windows(session):

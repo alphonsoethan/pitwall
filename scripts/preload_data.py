@@ -23,7 +23,10 @@ from data_store import (  # noqa: E402
 def main():
     cache_dir = ROOT / "cache"
     cache_dir.mkdir(exist_ok=True)
-    fastf1.Cache.enable_cache(str(cache_dir))
+    try:
+        fastf1.Cache.configure(cache_dir=str(cache_dir))
+    except AttributeError:  # older FastF1 without .configure
+        fastf1.Cache.enable_cache(str(cache_dir))
 
     print(f"Loading {RACE_YEAR} {RACE_EVENT} ({RACE_SESSION}) ...")
     session = fastf1.get_session(RACE_YEAR, RACE_EVENT, RACE_SESSION)

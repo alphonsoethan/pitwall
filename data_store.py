@@ -15,6 +15,7 @@ import pandas as pd
 
 RACE_YEAR = 2024
 RACE_EVENT = "São Paulo"
+RACE_EVENT_NAME = "São Paulo Grand Prix"  # what FastF1 reports as session.event["EventName"]
 RACE_SESSION = "R"
 DATA_DIR = Path(__file__).resolve().parent / "data" / "sao_paulo_2024"
 
@@ -40,10 +41,25 @@ FILES = {
 }
 
 
+class _Event:
+    """Mimics the bits of FastF1's Event the app reads: event['EventName'] and event.year."""
+
+    def __init__(self, name, year):
+        self.year = year
+        self._data = {"EventName": name, "EventDate": None}
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+
 class CachedSession:
     """Minimal stand-in for a FastF1 Session: same attribute names the app reads."""
 
     def __init__(self, laps, results, weather_data, track_status):
+        self.event = _Event(RACE_EVENT_NAME, RACE_YEAR)
         laps = laps.dropna(subset=["LapNumber"]).copy()
         laps["LapNumber"] = laps["LapNumber"].astype(int)
         self.laps = laps
@@ -55,14 +71,6 @@ class CachedSession:
     def total_laps(self):
         return int(self.laps["LapNumber"].max())
 
-    @property
-    def event(self):
-        """Mimics FastF1's session.event: dict-style AND attribute-style access."""
-        class _Event(dict):
-            @property
-            def year(self):
-                return self.get("year")
-        return _Event({"EventName": RACE_EVENT, "year": RACE_YEAR})
 
 def _subset(df, cols):
     if df is None:

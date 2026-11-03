@@ -228,13 +228,11 @@ def compute_standings(session, lap):
         run_df["Gap"], run_df["GapSeconds"], run_df["Interval"] = gaps, gap_secs, intervals
         run_df = run_df.drop(columns=["_pos", "_time"])
 
-    out_df = pd.DataFrame(out)
-    if not out_df.empty:
-        out_df = out_df.sort_values("RetiredAfterLap", ascending=False, kind="stable")
-    frames = [f for f in (run_df, out_df) if not f.empty]
-    if not frames:
-        return pd.DataFrame(columns=STANDINGS_COLUMNS)
-    return pd.concat(frames, ignore_index=True)[STANDINGS_COLUMNS]
+    # Build the result from plain records (running cars first, then retirements, latest first)
+    # rather than pd.concat, which warns about empty or all-NA columns.
+    records = run_df.to_dict("records") if not run_df.empty else []
+    records += sorted(out, key=lambda d: d["RetiredAfterLap"], reverse=True)
+    return pd.DataFrame(records, columns=STANDINGS_COLUMNS)
 
 
 # ------------------------------------------------------ flag, weather, laps
@@ -417,4 +415,4 @@ def build_context(session, lap, standings, favourites=None, race_label="São Pau
             else:
                 lines.append(f"{name}: P{r['Position']}, gap {r['Gap']}, interval {r['Interval']}, "
                              f"tyre {r['TyreText']}, last lap {format_laptime(r['LapTime'])}")
-    return "\n".join(lines)
+    return "\n".join(lines) 
