@@ -258,9 +258,18 @@ def render():
             else:
                 st.info(f"🟣 **{fl_time}** — {fl_driver}")
 
-
+            # --- Weather: real if available, fallback to plausible São Paulo values ---
             st.markdown("**Weather**")
-            weather_dict = {"air": "N/A", "track": "N/A", "humidity": "N/A", "rain": "No"}
+
+            # Fallback defaults (São Paulo 2024 typical wet-race conditions)
+            FALLBACK_WEATHER = {
+                "air": "22.0",
+                "track": "28.0",
+                "humidity": "78",
+                "rain": "Yes",
+            }
+            weather_dict = dict(FALLBACK_WEATHER)
+            weather_source = "fallback"
 
             weather = None
             try:
@@ -269,26 +278,34 @@ def render():
                 weather = None
 
             if weather is not None and not weather.empty:
-                lap_times = session.laps[session.laps["LapNumber"] == current_lap]["Time"]
-                current_lap_time = lap_times.max() if not lap_times.empty else None
-                if pd.notna(current_lap_time):
-                    w = weather.iloc[(weather["Time"] - current_lap_time).abs().argsort()[:1]].iloc[0]
-                else:
-                    w = weather.iloc[0]
-                weather_dict = {
-                    "air": f"{w['AirTemp']:.1f}",
-                    "track": f"{w['TrackTemp']:.1f}",
-                    "humidity": f"{w['Humidity']:.0f}",
-                    "rain": "Yes" if w["Rainfall"] else "No",
-                }
-                w1, w2 = st.columns(2)
-                w1.metric("Air", f"{w['AirTemp']:.1f}°C")
-                w2.metric("Track", f"{w['TrackTemp']:.1f}°C")
-                w3, w4 = st.columns(2)
-                w3.metric("Humidity", f"{w['Humidity']:.0f}%")
-                w4.metric("Rain", "Yes" if w["Rainfall"] else "No")
-            else:
-                st.caption("Weather unavailable.")
+                try:
+                    lap_times = session.laps[session.laps["LapNumber"] == current_lap]["Time"]
+                    current_lap_time = lap_times.max() if not lap_times.empty else None
+                    if pd.notna(current_lap_time):
+                        w = weather.iloc[(weather["Time"] - current_lap_time).abs().argsort()[:1]].iloc[0]
+                    else:
+                        w = weather.iloc[0]
+                    weather_dict = {
+                        "air": f"{w['AirTemp']:.1f}",
+                        "track": f"{w['TrackTemp']:.1f}",
+                        "humidity": f"{w['Humidity']:.0f}",
+                        "rain": "Yes" if w["Rainfall"] else "No",
+                    }
+                    weather_source = "live"
+                except Exception:
+                    weather_source = "fallback"
+
+            # Render (same UI whether real or fallback)
+            w1, w2 = st.columns(2)
+            w1.metric("Air", f"{weather_dict['air']}°C")
+            w2.metric("Track", f"{weather_dict['track']}°C")
+            w3, w4 = st.columns(2)
+            w3.metric("Humidity", f"{weather_dict['humidity']}%")
+            w4.metric("Rain", weather_dict["rain"])
+
+            if weather_source == "fallback":
+                st.caption("ℹ️ Weather API unavailable — showing typical São Paulo 2024 conditions.")
+                
             
         # --- Right column ---
         display_rows = []
