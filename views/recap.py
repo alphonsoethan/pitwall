@@ -17,15 +17,26 @@ def render_setup():
 
     max_laps = int(RACE_MAP["São Paulo 2024"]["laps"])
 
+    # Pre-fill with the previous selection if the user is editing
+    saved_driver = st.session_state.get("recap_driver", "Whole race (no specific driver)")
+    saved_lap = st.session_state.get("recap_from_lap", 0)
+
+    driver_options = ["Whole race (no specific driver)"] + DRIVER_CHOICES
+    driver_index = (
+        driver_options.index(saved_driver)
+        if saved_driver in driver_options else 0
+    )
+
     driver = st.selectbox(
         "Driver to focus on (optional)",
-        ["Whole race (no specific driver)"] + DRIVER_CHOICES,
+        driver_options,
+        index=driver_index,
     )
     from_lap = st.slider(
         "I left at lap (0 = missed the entire race)",
         min_value=0,
         max_value=max_laps,
-        value=0,
+        value=int(saved_lap) if 0 <= saved_lap <= max_laps else 0,
         help=f"São Paulo 2024 has {max_laps} laps. Set to 0 to recap the entire race.",
     )
 
@@ -37,7 +48,7 @@ def render_setup():
         st.session_state.verdict_text = None
         st.session_state.page = "recap"
         st.rerun()
-        
+
 
 def _render_classification_table(session):
     """Final classification: position, driver, team, points."""
@@ -59,9 +70,15 @@ def _render_classification_table(session):
     st.dataframe(display, hide_index=True, use_container_width=True, height=340)
 
 
-
 def render_display():
-    if st.button("← Back to Home"):
+    # Two actions: go back to the setup page (edit selection), or leave the recap entirely
+    b_edit, b_home, _ = st.columns([1, 1, 4])
+    if b_edit.button("✏️ Edit selection"):
+        st.session_state.recap_text = None
+        st.session_state.verdict_text = None
+        st.session_state.page = "recap_setup"
+        st.rerun()
+    if b_home.button("← Back to Home"):
         st.session_state.page = "home"
         st.session_state.recap_text = None
         st.session_state.verdict_text = None
@@ -108,7 +125,6 @@ def render_display():
     with right_col:
         st.subheader("Final classification")
         _render_classification_table(session)
-
 
     st.divider()
 
