@@ -71,8 +71,9 @@ def _render_classification_table(session):
 
 
 def render_display():
-    # Two actions: go back to the setup page (edit selection), or leave the recap entirely
-    b_home, b_edit = st.columns([1, 1, 4])
+    # Two actions: edit the selection (back to setup), or leave the recap entirely.
+    # Three columns are created, so unpack into three variables.
+    b_home, b_edit, _ = st.columns([1, 1, 4])
     if b_edit.button("✏️ Edit selection"):
         st.session_state.recap_text = None
         st.session_state.verdict_text = None
@@ -98,7 +99,7 @@ def render_display():
     st.caption(f"You left at {lap_label}")
 
     session = get_shared_session()
-    # --- Top row: highlights box (left) | classification + standings (right) ---
+    # --- Top row: highlights box (left) | classification (right) ---
     left_col, right_col = st.columns([1, 1.2])
 
     with left_col:
@@ -128,7 +129,7 @@ def render_display():
 
     st.divider()
 
-    # --- Recap + verdict ---
+    # --- Recap + verdict (auto-generated on first load for this selection) ---
     if st.session_state.recap_text is None or st.session_state.verdict_text is None:
         with st.spinner("Building your recap from real race data..."):
             from race_data import build_recap_data, build_race_summary

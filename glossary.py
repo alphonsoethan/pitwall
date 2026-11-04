@@ -62,9 +62,13 @@ GLOSSARY = {
         "A driver is lapped when the leader catches and passes them, putting them a full "
         "lap behind.",
     ),
-    "DNF": (
-        ["dnf", "did not finish", "retired", "retirement"],
-        "Did Not Finish: the driver's race ended early because of a crash or a car problem.",
+    "DNS": (
+        ["dns", "did not start", "withdrew", "non-starter"],
+        "Did Not Start: the driver did not take part in the race start due to a pre-race crash, car failure, or penalty.",
+    ),
+    "DNS": (
+            ["dns", "did not start", "retired", "retirement"],
+            "Did Not Finish: the driver's race ended early because of a crash or a car problem.",
     ),
     "Gap / Interval": (
         ["gap", "interval"],
